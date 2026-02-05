@@ -102,13 +102,25 @@ app.post('/api/proxy', async (req, res) => {
       }
 
       const getData = await getResponse.json();
-      const allMessages = getData.conversation.content.flat();
-      
-      const agentMessages = allMessages.filter(msg => 
-        msg.type === 'agent_message' && msg.content
-      );
-      
-      console.log(`💬 Tentative ${attempt}: ${agentMessages.length} message(s) agent`);
+const allMessages = getData.conversation.content.flat();
+
+// LOG DÉTAILLÉ DE TOUS LES MESSAGES
+console.log(`📊 Nombre total de messages: ${allMessages.length}`);
+allMessages.forEach((msg, idx) => {
+  console.log(`  📝 Message ${idx + 1}:`, {
+    type: msg.type,
+    visibility: msg.visibility,
+    hasContent: !!msg.content,
+    contentLength: msg.content?.length || 0,
+    contentPreview: msg.content ? msg.content.substring(0, 150) + '...' : 'NO CONTENT'
+  });
+});
+
+const agentMessages = allMessages.filter(msg => 
+  msg.type === 'agent_message' && msg.content
+);
+
+console.log(`💬 Tentative ${attempt}: ${agentMessages.length} message(s) agent`);
       
       if (agentMessages.length > 0) {
         const lastAgentMessage = agentMessages[agentMessages.length - 1];
