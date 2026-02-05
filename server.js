@@ -79,7 +79,7 @@ app.post('/api/proxy', async (req, res) => {
     console.log('✅ Conversation créée:', conversationId);
 
     // Polling avec timeout plus long (30 secondes max)
-    const maxAttempts = 15;
+    const maxAttempts = 30;
     const delayBetweenAttempts = 2000;
     
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
