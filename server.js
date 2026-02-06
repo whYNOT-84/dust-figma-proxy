@@ -5,11 +5,9 @@ const fetch = require('node-fetch');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Route principale
 app.get('/', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -17,7 +15,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// Route proxy
 app.post('/api/proxy', async (req, res) => {
   try {
     const { prompt, assistantId } = req.body;
@@ -38,9 +35,10 @@ app.post('/api/proxy', async (req, res) => {
     }
 
     console.log('📝 Prompt reçu:', prompt);
+    console.log('🌊 Utilisation du streaming...');
 
-    // Créer la conversation
-    const createResponse = await fetch(
+    // Créer la conversation avec streaming
+    const dustResponse = await fetch(
       `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations`,
       {
         method: 'POST',
@@ -59,95 +57,91 @@ app.post('/api/proxy', async (req, res) => {
           },
           assistantId: assistantId,
           blocking: false,
+          stream: true,
           title: `Mockup: ${prompt.substring(0, 50)}...`
         })
       }
     );
 
-    if (!createResponse.ok) {
-      const errorText = await createResponse.text();
-      console.error('❌ Erreur création:', errorText);
-      return res.status(createResponse.status).json({ 
-        error: 'Dust API error (create)', 
+    if (!dustResponse.ok) {
+      const errorText = await dustResponse.text();
+      console.error('❌ Erreur Dust:', errorText);
+      return res.status(dustResponse.status).json({ 
+        error: 'Dust API error', 
         details: errorText 
       });
     }
 
-    const createData = await createResponse.json();
-    const conversationId = createData.conversation.sId;
-    
-    console.log('✅ Conversation créée:', conversationId);
+    console.log('✅ Stream ouvert, lecture en cours...');
 
-    // Polling avec timeout plus long (30 secondes max)
-    const maxAttempts = 30;
-    const delayBetweenAttempts = 2000;
+    // Lire le stream ligne par ligne
+    const text = await dustResponse.text();
+    const lines = text.split('\n');
     
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      console.log(`🔍 Tentative ${attempt}/${maxAttempts}...`);
+    let conversationData = null;
+    let agentContent = '';
+    let lastMessageId = null;
+
+    for (const line of lines) {
+      if (!line.trim() || !line.startsWith('data: ')) continue;
       
-      await new Promise(resolve => setTimeout(resolve, delayBetweenAttempts));
-
-      const getResponse = await fetch(
-        `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations/${conversationId}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${DUST_API_KEY}`
+      try {
+        const jsonStr = line.substring(6);
+        const event = JSON.parse(jsonStr);
+        
+        console.log('📨 Event type:', event.type);
+        
+        // Stocker la conversation
+        if (event.type === 'user_message_new') {
+          conversationData = event.conversation;
+        }
+        
+        // Accumuler le contenu de l'agent
+        if (event.type === 'agent_message_new') {
+          if (event.message && event.message.content) {
+            agentContent += event.message.content;
+            lastMessageId = event.message.sId;
           }
         }
-      );
-
-      if (!getResponse.ok) {
-        console.log(`⚠️ Erreur récupération tentative ${attempt}`);
+        
+        // Message final
+        if (event.type === 'agent_message_success') {
+          if (event.message && event.message.content) {
+            agentContent = event.message.content;
+            lastMessageId = event.message.sId;
+          }
+          console.log('✅ Message agent complet reçu');
+        }
+        
+      } catch (e) {
+        // Ignorer les lignes invalides
         continue;
       }
-
-      const getData = await getResponse.json();
-const allMessages = getData.conversation.content.flat();
-
-// LOG DÉTAILLÉ DE TOUS LES MESSAGES
-console.log(`📊 Nombre total de messages: ${allMessages.length}`);
-allMessages.forEach((msg, idx) => {
-  console.log(`  📝 Message ${idx + 1}:`, {
-    type: msg.type,
-    visibility: msg.visibility,
-    hasContent: !!msg.content,
-    contentLength: msg.content?.length || 0,
-    contentPreview: msg.content ? msg.content.substring(0, 150) + '...' : 'NO CONTENT'
-  });
-});
-
-const agentMessages = allMessages.filter(msg => 
-  msg.type === 'agent_message' && msg.content
-);
-
-console.log(`💬 Tentative ${attempt}: ${agentMessages.length} message(s) agent`);
-      
-      if (agentMessages.length > 0) {
-        const lastAgentMessage = agentMessages[agentMessages.length - 1];
-        console.log('✅ Message agent trouvé !');
-        console.log('📝 Longueur:', lastAgentMessage.content.length);
-        
-        return res.status(200).json({
-          conversation: {
-            ...getData.conversation,
-            content: [[lastAgentMessage]]
-          }
-        });
-      }
-      
-      if (attempt === maxAttempts) {
-        console.error('❌ Timeout après', maxAttempts * delayBetweenAttempts / 1000, 'secondes');
-        
-        return res.status(408).json({ 
-          error: 'Timeout: assistant did not respond in time',
-          debug: {
-            conversationId,
-            attempts: maxAttempts,
-            conversationUrl: `https://dust.tt/w/${DUST_WORKSPACE_ID}/conversation/${conversationId}`
-          }
-        });
-      }
     }
+
+    if (!agentContent) {
+      console.error('❌ Aucun contenu agent trouvé');
+      return res.status(500).json({ 
+        error: 'No agent response found',
+        debug: { conversationId: conversationData?.sId }
+      });
+    }
+
+    console.log('📦 Contenu agent longueur:', agentContent.length);
+    console.log('📝 Preview:', agentContent.substring(0, 200));
+
+    // Retourner au format attendu par le plugin
+    return res.status(200).json({
+      conversation: {
+        ...conversationData,
+        content: [[{
+          type: 'agent_message',
+          content: agentContent,
+          sId: lastMessageId || 'generated',
+          visibility: 'visible'
+        }]]
+      }
+    });
 
   } catch (error) {
     console.error('❌ Erreur serveur:', error);
